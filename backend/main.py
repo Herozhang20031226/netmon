@@ -1,10 +1,13 @@
 import ipaddress
 import platform
+import re
 import subprocess
 
 from fastapi import FastAPI, HTTPException
 
 app = FastAPI()
+
+LATENCY_PATTERN = re.compile(r"time[=<]([\d.]+)\s*ms")
 
 @app.get("/")
 def root():
@@ -13,16 +16,29 @@ def root():
 @app.get("/ping/{ip}")
 def ping(ip: str):
     try:
-        ipaddress.ip_address(ip)
+        addr = ipaddress.ip_address(ip)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid IP address")
 
-    count_flag = "-n" if platform.system() == "Windows" else "-c"
+    system = platform.system()
+    count_flag = "-n" if system == "Windows" else "-c"
+    command = "ping6" if addr.version == 6 and system == "Darwin" else "ping"
 
-    result = subprocess.run(
-        ["ping", count_flag, "1", ip],
-        capture_output=True,
-        timeout=5,
-    )
+    try: 
+        result = subprocess.run(
+            ["ping", count_flag, "1", ip],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except subprocess.TimeoutExpired:
+        return {"ip": ip, "reachable": False, "latency_ms": None}
 
-    return {"ip": ip, "reachable": result.returncode == 0}
+    reachable = result.returncode == 0
+    latency_ms = None
+    if reachable:
+        match = LATENCY_PATTERN.search(result.stdout)
+        if match:
+            latency_ms = float(match.group(1))
+
+    return {"ip": ip, "reachable": reachable, "latency_ms": latency_ms}
